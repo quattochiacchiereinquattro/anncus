@@ -3,7 +3,7 @@ name: Update ANNCSU Data
 on:
   schedule:
     # Prima domenica del mese alle 03:00 UTC
-    - cron: "0 3 1-7 * 0"
+    - cron: '0 1 1,5,9,13,15 * 1-5'
   workflow_dispatch:
     inputs:
       force:
