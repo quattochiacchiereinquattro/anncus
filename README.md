@@ -1,3 +1,3 @@
 # anncus
 
-Aggiornam,eto automatico dei dati sui numeri civici by @opendatasicilia
+Aggiornameto automatico dati numeri civici Nazionali by @opendatasicilia
