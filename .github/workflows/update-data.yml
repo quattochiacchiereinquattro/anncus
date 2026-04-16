@@ -1,0 +1,183 @@
+name: Update ANNCSU Data
+
+on:
+  schedule:
+    # Prima domenica del mese alle 03:00 UTC
+    - cron: "0 3 1-7 * 0"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Forza il re-download anche se i dati sono aggiornati"
+        type: boolean
+        default: false
+      skip_pmtiles:
+        description: "Salta la conversione PMTiles"
+        type: boolean
+        default: false
+      regenerate_boundaries:
+        description: "Rigenera istat-boundaries.parquet anche se già presente"
+        type: boolean
+        default: false
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  # ── Step 0: controlla cosa è già presente nel repo ────────────────────────
+  check:
+    name: "0 · Controlla file esistenti"
+    runs-on: ubuntu-latest
+    outputs:
+      boundaries_exists: ${{ steps.check-boundaries.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Controlla se istat-boundaries.parquet esiste
+        id: check-boundaries
+        run: |
+          if [ -f data/istat-boundaries.parquet ] && \
+             [ "${{ inputs.regenerate_boundaries }}" != "true" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "istat-boundaries.parquet trovato, salto la rigenerazione"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "istat-boundaries.parquet non trovato (o rigenerazione forzata)"
+          fi
+
+      # Se il file esiste già, lo pubblica come artefatto per il job successivo
+      - name: Upload istat-boundaries.parquet esistente
+        if: steps.check-boundaries.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: istat-boundaries
+          path: data/istat-boundaries.parquet
+          retention-days: 1
+
+  # ── Step 1: comuni.json e boundaries in parallelo (boundaries solo se manca) ──
+  generate-comuni:
+    name: "1a · Genera comuni.json"
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Genera comuni.json
+        run: uv run scripts/generate_comuni.py
+
+      - name: Upload comuni.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: comuni-json
+          path: data/comuni.json
+          retention-days: 1
+
+  generate-boundaries:
+    name: "1b · Genera istat-boundaries.parquet"
+    runs-on: ubuntu-latest
+    needs: check
+    if: needs.check.outputs.boundaries_exists == 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Genera istat-boundaries.parquet
+        run: uv run scripts/generate_boundaries.py
+
+      - name: Upload istat-boundaries.parquet
+        uses: actions/upload-artifact@v4
+        with:
+          name: istat-boundaries
+          path: data/istat-boundaries.parquet
+          retention-days: 1
+
+  # ── Step 2: download ANNCSU e produzione artefatti finali ─────────────────
+  update-data:
+    name: "2 · Aggiorna dati ANNCSU"
+    runs-on: ubuntu-latest
+    needs: [generate-comuni, generate-boundaries]
+    # Gira sempre: generate-boundaries può essere skippato (boundaries già presenti)
+    if: always() && !failure() && !cancelled()
+    steps:
+      - name: Installa Git LFS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Configura Git LFS per i file binari grandi
+        run: |
+          git lfs track "data/*.parquet"
+          git lfs track "data/*.pmtiles"
+          git add .gitattributes
+          git diff --cached --quiet || \
+            git commit -m "chore: configura Git LFS per parquet e pmtiles"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Installa tippecanoe
+        if: ${{ !inputs.skip_pmtiles }}
+        run: sudo apt-get install -y tippecanoe
+
+      - name: Download comuni.json
+        uses: actions/download-artifact@v4
+        with:
+          name: comuni-json
+          path: data/
+
+      - name: Download istat-boundaries.parquet
+        uses: actions/download-artifact@v4
+        with:
+          name: istat-boundaries
+          path: data/
+
+      - name: Ripristina marker data precedente
+        uses: actions/cache@v4
+        with:
+          path: data/.last_remote_date
+          key: anncsu-date-marker-${{ runner.os }}
+
+      - name: Aggiorna dati ANNCSU
+        run: |
+          ARGS=""
+          [ "${{ inputs.force }}" = "true" ]        && ARGS="$ARGS --force"
+          [ "${{ inputs.skip_pmtiles }}" = "true" ] && ARGS="$ARGS --skip-pmtiles"
+          uv run scripts/update_data.py $ARGS
+
+      - name: Salva marker data dataset
+        uses: actions/cache@v4
+        with:
+          path: data/.last_remote_date
+          key: anncsu-date-marker-${{ runner.os }}
+
+      - name: Commit dati in data/
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/comuni.json \
+                  data/istat-boundaries.parquet \
+                  data/anncsu-indirizzi.parquet \
+                  data/.last_remote_date
+          [ -f data/anncsu-indirizzi.pmtiles ] && git add data/anncsu-indirizzi.pmtiles || true
+          git diff --cached --quiet || \
+            git commit -m "chore(data): aggiornamento dati ANNCSU $(date -u +%Y-%m-%d)"
+          git push
