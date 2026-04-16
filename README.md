@@ -16,7 +16,7 @@
 
 ---
 
-<img width="1501" height="1252" alt="2026-04-16_20h48_03" src="https://github.com/user-attachments/assets/73998acb-82af-4636-8d94-d8c29ceb4b23" />
+
 
 ---
 
