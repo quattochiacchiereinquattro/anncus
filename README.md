@@ -16,7 +16,9 @@
 
 ---
 
-![anncsu_workflow](doc/anncsu_workflow.png "WorkFlow")
+<div align="center">
+  <img src="doc/anncsu_workflow.png" alt="anncsu_workflow" title="WorkFlow">
+</div>
 
 ---
 
