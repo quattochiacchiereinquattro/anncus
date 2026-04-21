@@ -168,19 +168,26 @@ jobs:
       # ── Invio file pesanti via FTP sul server gbvitrano.it ────────────────
       - name: Installa lftp
         run: sudo apt-get install -y lftp
-
+        
 - name: Carica file su FTP
         env:
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
-          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << EOF
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << 'EOF'
           set ssl:verify-certificate false
           set ftp:passive-mode true
           mkdir -p /public_html/anncus/data
           put data/comuni.json -o /public_html/anncus/data/comuni.json
           put data/anncsu-indirizzi.parquet -o /public_html/anncus/data/anncsu-indirizzi.parquet
-          ${{ inputs.skip_pmtiles != 'true' && 'put data/anncsu-indirizzi.pmtiles -o /public_html/anncus/data/anncsu-indirizzi.pmtiles' || '# pmtiles skippato' }}
           put data/istat-boundaries.parquet -o /public_html/anncus/data/istat-boundaries.parquet
           bye
           EOF
+          if [ "${{ inputs.skip_pmtiles }}" != "true" ]; then
+            lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << 'EOF'
+            set ssl:verify-certificate false
+            set ftp:passive-mode true
+            put data/anncsu-indirizzi.pmtiles -o /public_html/anncus/data/anncsu-indirizzi.pmtiles
+            bye
+            EOF
+          fi
