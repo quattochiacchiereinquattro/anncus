@@ -2,7 +2,6 @@ name: Update ANNCSU Data
 
 on:
   # schedule:
-  #   # Prima domenica del mese alle 03:00 UTC
   #   - cron: '0 1 1,5,9,13,15 * 1-5'
   workflow_dispatch:
     inputs:
@@ -24,9 +23,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ── Step 0: controlla cosa è già presente nel repo ────────────────────────
+
   check:
-    name: "0 · Controlla file esistenti"
+    name: "0 - Controlla file esistenti"
     runs-on: ubuntu-latest
     outputs:
       boundaries_exists: ${{ steps.check-boundaries.outputs.exists }}
@@ -55,9 +54,8 @@ jobs:
           path: data/istat-boundaries.parquet
           retention-days: 1
 
-  # ── Step 1a: genera comuni.json ───────────────────────────────────────────
   generate-comuni:
-    name: "1a · Genera comuni.json"
+    name: "1a - Genera comuni.json"
     runs-on: ubuntu-latest
     needs: check
     steps:
@@ -79,9 +77,8 @@ jobs:
           path: data/comuni.json
           retention-days: 1
 
-  # ── Step 1b: genera istat-boundaries.parquet (solo se manca) ──────────────
   generate-boundaries:
-    name: "1b · Genera istat-boundaries.parquet"
+    name: "1b - Genera istat-boundaries.parquet"
     runs-on: ubuntu-latest
     needs: check
     if: needs.check.outputs.boundaries_exists == 'false'
@@ -104,9 +101,8 @@ jobs:
           path: data/istat-boundaries.parquet
           retention-days: 1
 
-  # ── Step 2: download ANNCSU, produzione artefatti, invio FTP ──────────────
   update-data:
-    name: "2 · Aggiorna dati ANNCSU"
+    name: "2 - Aggiorna dati ANNCSU"
     runs-on: ubuntu-latest
     needs: [generate-comuni, generate-boundaries]
     if: always() && !failure() && !cancelled()
@@ -154,7 +150,6 @@ jobs:
           path: data/.last_remote_date
           key: anncsu-date-marker-${{ runner.os }}
 
-      # ── Commit solo dei file leggeri nel repo (NO LFS) ────────────────────
       - name: Commit comuni.json e marker data
         run: |
           git config user.name  "github-actions[bot]"
@@ -165,16 +160,15 @@ jobs:
             git commit -m "chore(data): aggiornamento dati ANNCSU $(date -u +%Y-%m-%d)"
           git push
 
-      # ── Invio file pesanti via FTP sul server gbvitrano.it ────────────────
       - name: Installa lftp
         run: sudo apt-get install -y lftp
-        
-- name: Carica file su FTP
+
+      - name: Carica parquet e comuni.json su FTP
         env:
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
-          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << 'EOF'
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << 'FTPEOF'
           set ssl:verify-certificate false
           set ftp:passive-mode true
           mkdir -p /public_html/anncus/data
@@ -182,12 +176,17 @@ jobs:
           put data/anncsu-indirizzi.parquet -o /public_html/anncus/data/anncsu-indirizzi.parquet
           put data/istat-boundaries.parquet -o /public_html/anncus/data/istat-boundaries.parquet
           bye
-          EOF
-          if [ "${{ inputs.skip_pmtiles }}" != "true" ]; then
-            lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << 'EOF'
-            set ssl:verify-certificate false
-            set ftp:passive-mode true
-            put data/anncsu-indirizzi.pmtiles -o /public_html/anncus/data/anncsu-indirizzi.pmtiles
-            bye
-            EOF
-          fi
+          FTPEOF
+
+      - name: Carica PMTiles su FTP
+        if: ${{ !inputs.skip_pmtiles }}
+        env:
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << 'FTPEOF'
+          set ssl:verify-certificate false
+          set ftp:passive-mode true
+          put data/anncsu-indirizzi.pmtiles -o /public_html/anncus/data/anncsu-indirizzi.pmtiles
+          bye
+          FTPEOF
