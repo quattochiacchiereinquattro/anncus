@@ -1,9 +1,9 @@
 name: Update ANNCSU Data
 
 on:
-#  schedule:
-#    # Prima domenica del mese alle 03:00 UTC
-#    - cron: '0 1 1,5,9,13,15 * 1-5'
+  # schedule:
+  #   # Prima domenica del mese alle 03:00 UTC
+  #   - cron: '0 1 1,5,9,13,15 * 1-5'
   workflow_dispatch:
     inputs:
       force:
@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
       - name: Controlla se istat-boundaries.parquet esiste
         id: check-boundaries
@@ -47,7 +47,6 @@ jobs:
             echo "istat-boundaries.parquet non trovato (o rigenerazione forzata)"
           fi
 
-      # Se il file esiste già, lo pubblica come artefatto per il job successivo
       - name: Upload istat-boundaries.parquet esistente
         if: steps.check-boundaries.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
@@ -56,7 +55,7 @@ jobs:
           path: data/istat-boundaries.parquet
           retention-days: 1
 
-  # ── Step 1: comuni.json e boundaries in parallelo (boundaries solo se manca) ──
+  # ── Step 1a: genera comuni.json ───────────────────────────────────────────
   generate-comuni:
     name: "1a · Genera comuni.json"
     runs-on: ubuntu-latest
@@ -64,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -80,6 +79,7 @@ jobs:
           path: data/comuni.json
           retention-days: 1
 
+  # ── Step 1b: genera istat-boundaries.parquet (solo se manca) ──────────────
   generate-boundaries:
     name: "1b · Genera istat-boundaries.parquet"
     runs-on: ubuntu-latest
@@ -88,7 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -104,31 +104,16 @@ jobs:
           path: data/istat-boundaries.parquet
           retention-days: 1
 
-  # ── Step 2: download ANNCSU e produzione artefatti finali ─────────────────
+  # ── Step 2: download ANNCSU, produzione artefatti, invio FTP ──────────────
   update-data:
     name: "2 · Aggiorna dati ANNCSU"
     runs-on: ubuntu-latest
     needs: [generate-comuni, generate-boundaries]
-    # Gira sempre: generate-boundaries può essere skippato (boundaries già presenti)
     if: always() && !failure() && !cancelled()
     steps:
-      - name: Installa Git LFS
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y git-lfs
-          git lfs install
-
       - uses: actions/checkout@v4
         with:
-          lfs: true
-
-      - name: Configura Git LFS per i file binari grandi
-        run: |
-          git lfs track "data/*.parquet"
-          git lfs track "data/*.pmtiles"
-          git add .gitattributes
-          git diff --cached --quiet || \
-            git commit -m "chore: configura Git LFS per parquet e pmtiles"
+          lfs: false
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -169,15 +154,32 @@ jobs:
           path: data/.last_remote_date
           key: anncsu-date-marker-${{ runner.os }}
 
-      - name: Commit dati in data/
+      # ── Commit solo dei file leggeri nel repo (NO LFS) ────────────────────
+      - name: Commit comuni.json e marker data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/comuni.json \
-                  data/istat-boundaries.parquet \
-                  data/anncsu-indirizzi.parquet \
                   data/.last_remote_date
-          [ -f data/anncsu-indirizzi.pmtiles ] && git add data/anncsu-indirizzi.pmtiles || true
           git diff --cached --quiet || \
             git commit -m "chore(data): aggiornamento dati ANNCSU $(date -u +%Y-%m-%d)"
           git push
+
+      # ── Invio file pesanti via FTP sul server gbvitrano.it ────────────────
+      - name: Installa lftp
+        run: sudo apt-get install -y lftp
+
+      - name: Carica file su FTP
+        env:
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" ftp.gbvitrano.it << EOF
+          set ssl:verify-certificate false
+          set ftp:passive-mode true
+          mkdir -p /public_html/anncus/data
+          put data/anncsu-indirizzi.parquet -o /public_html/anncus/data/anncsu-indirizzi.parquet
+          ${{ inputs.skip_pmtiles != 'true' && 'put data/anncsu-indirizzi.pmtiles -o /public_html/anncus/data/anncsu-indirizzi.pmtiles' || '# pmtiles skippato' }}
+          put data/istat-boundaries.parquet -o /public_html/anncus/data/istat-boundaries.parquet
+          bye
+          EOF
